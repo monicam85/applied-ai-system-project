@@ -7,6 +7,7 @@ Run from the project root:
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
@@ -237,7 +238,22 @@ def beyond_accuracy(songs: List[Dict], results: Dict[str, Dict]) -> Tuple[List[s
 
 
 def run() -> Tuple[str, int, int]:
-    """Runs everything. Returns (markdown report, checks passed, checks total)."""
+    """
+    Runs everything. Returns (markdown report, checks passed, checks total).
+
+    ANTHROPIC_API_KEY is removed for the duration, so the offline cases never reach a live model and
+    the results are the same with or without a key set.
+    """
+    previous = os.environ.pop("ANTHROPIC_API_KEY", None)
+    try:
+        return _run()
+    finally:
+        if previous is not None:
+            os.environ["ANTHROPIC_API_KEY"] = previous
+
+
+def _run() -> Tuple[str, int, int]:
+    """The evaluation itself; call run(), which makes it hermetic."""
     songs = load_songs(str(SONGS_CSV))
     lines = ["# Evaluation report", "",
              f"Catalog: {len(songs)} songs. Top-k: {K}.", "",

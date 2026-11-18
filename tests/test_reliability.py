@@ -129,3 +129,42 @@ def test_llm_prompt_tells_the_model_to_read_the_wanted_state():
     from src.nl_query import _system_prompt
     prompt = _system_prompt(SONGS)
     assert "WANTS" in prompt and "cheer me up" in prompt and "not sad" in prompt
+
+
+class _Block:
+    def __init__(self, type_, text=None):
+        self.type = type_
+        if text is not None:
+            self.text = text
+
+
+def _client_returning(*blocks):
+    class Client:
+        class messages:
+            @staticmethod
+            def create(**kwargs):
+                class Reply:
+                    content = list(blocks)
+                return Reply()
+    return Client()
+
+
+def test_reply_that_starts_with_a_thinking_block_is_parsed():
+    # Seen from the live API: content[0] is a thinking block with no .text, content[1] holds the JSON.
+    client = _client_returning(_Block("thinking"), _Block("text", '{"mood": "focused", "energy": 0.35}'))
+    prefs, notes, source = parse_request("anything", SONGS, client=client)
+    assert source == "llm" and prefs == {"mood": "focused", "energy": 0.35}
+    assert not any("failed" in n for n in notes)
+
+
+def test_reply_with_no_text_block_falls_back_cleanly():
+    client = _client_returning(_Block("thinking"))
+    prefs, notes, source = parse_request("something mellow for studying", SONGS, client=client)
+    assert source == "keywords" and prefs.get("mood") == "chill"
+    assert any("LLM parse failed" in n for n in notes)
+
+
+def test_multiple_text_blocks_are_joined():
+    client = _client_returning(_Block("text", "Here you go: "), _Block("text", '{"mood": "happy"}'))
+    prefs, _, source = parse_request("anything", SONGS, client=client)
+    assert source == "llm" and prefs == {"mood": "happy"}

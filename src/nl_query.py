@@ -28,6 +28,7 @@ log = logging.getLogger("vibescorecard.nl_query")
 MODEL = "claude-haiku-5-5"
 MAX_REQUEST_CHARS = 500  # longer text is cut before it reaches the LLM
 TIMEOUT_SECONDS = 20.0  # a hung network call must not hang the app
+MAX_TOKENS = 1024  # headroom: the reply may include thinking tokens before the JSON
 ALLOWED_KEYS = {"genre", "mood", "energy", "likes_acoustic", "valence"}
 
 # Everyday words mapped to catalog moods / energy levels for the offline fallback.
@@ -127,12 +128,24 @@ def keyword_parse(text: str) -> Dict:
     return prefs
 
 
+def _reply_text(reply) -> str:
+    """
+    Joins the text blocks of a model reply. A reply can begin with a "thinking" block
+    that has no .text, so reading content[0].text is wrong; blocks without text are skipped.
+    """
+    texts = [block.text for block in reply.content
+             if getattr(block, "type", "text") == "text" and hasattr(block, "text")]
+    if not texts:
+        raise ValueError("model reply had no text block")
+    return "\n".join(texts)
+
+
 def _llm_parse(text: str, songs: List[Dict], client) -> Dict:
     reply = client.messages.create(
-        model=MODEL, max_tokens=300, system=_system_prompt(songs),
+        model=MODEL, max_tokens=MAX_TOKENS, system=_system_prompt(songs),
         messages=[{"role": "user", "content": text}],
     )
-    return _extract_json(reply.content[0].text)
+    return _extract_json(_reply_text(reply))
 
 
 def parse_request(text: str, songs: List[Dict], client=None, embedder=None) -> Tuple[Dict, List[str], str]:
