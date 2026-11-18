@@ -11,10 +11,11 @@ flowchart TB
         TAX[("data/taxonomy.json<br/>genre families,<br/>mood clusters")]
     end
 
-    subgraph PARSE["2. Interpret  (src/nl_query.py)"]
+    subgraph PARSE["2. Interpret  (src/nl_query.py, src/embed_parse.py)"]
         direction LR
         LLM["Claude parser<br/>optional, needs API key<br/>output treated as untrusted"]
-        KW["Keyword parser<br/>offline fallback"]
+        KW["Keyword rules, always available<br/>goal phrases, negation,<br/>mood and energy words"]
+        EMB["Embedding parser<br/>opt-in with --embeddings<br/>fills gaps the rules miss"]
         LLM -- "timeout, bad JSON,<br/>no key" --> KW
     end
 
@@ -39,13 +40,18 @@ flowchart TB
 
     subgraph TEST["Testing and evaluation"]
         direction TB
-        UNIT["pytest: 91 unit tests<br/>scorer, reliability,<br/>taxonomy competency questions,<br/>guardrails"]
+        UNIT["pytest: 98 unit tests<br/>scorer, reliability,<br/>taxonomy competency questions,<br/>guardrails"]
         EVAL["src/evaluate.py<br/>80 automated checks:<br/>14 profiles + LLM-reply cases,<br/>taxonomy before/after"]
         REPORT["reports/evaluation_report.md"]
+        BENCH["src/benchmark_parsers.py<br/>36-request parser benchmark:<br/>keywords vs embeddings vs hybrid<br/>vs live Claude"]
+        LEX["src/lexicon_check.py<br/>taxonomy vs NRC-VAD word ratings<br/>(aggregates only)"]
+        EVID["src/evidence.py, src/traces.py<br/>execution evidence and decision<br/>traces in reports/ and docs/"]
         EVAL --> REPORT
     end
 
     ASK --> LLM
+    ASK -. "--embeddings" .-> EMB
+    EMB -. "optional: fills gaps,<br/>rules win" .-> SAN
     KW --> SAN
     PROFILE --> SAN
     CSV --> RETR
@@ -67,6 +73,9 @@ flowchart TB
     UNIT -. "verifies" .-> SAN
     EVAL -. "runs end to end" .-> GUARD
     EVAL -. "runs" .-> PARSE
+    BENCH -. "measures" .-> PARSE
+    LEX -. "checks" .-> TAX
+    EVID -. "runs the system on<br/>fixed inputs" .-> GUARD
 
     %% Human checkpoints
     USER -. "H1: reads the reasons and<br/>confidence, judges the picks" .-> TOP

@@ -59,13 +59,12 @@ Real prompts from the session, quoted:
 
 **What did the agent generate or change?**
 
-Source: `src/reliability.py`, `src/taxonomy.py`, `src/nl_query.py`, `src/embed_parse.py`, `src/metrics.py`, `src/evaluate.py`, `src/lexicon_check.py`, `src/benchmark_parsers.py`, `src/traces.py`, edits to `src/recommender.py` and `src/main.py`. Data: `data/taxonomy.json`, `data/nl_benchmark.json`. Tests: 91 unit tests across eight test files. Docs: `README.md`, `model_card.md`, `diagrams/architecture.mmd`, `docs/`. It also ran the tests, the evaluator and fresh-virtualenv installs, and generated the reports in `reports/`.
+Source: `src/reliability.py`, `src/taxonomy.py`, `src/nl_query.py`, `src/embed_parse.py`, `src/metrics.py`, `src/evaluate.py`, `src/lexicon_check.py`, `src/benchmark_parsers.py`, `src/traces.py`, `src/evidence.py`, edits to `src/recommender.py` and `src/main.py`. Data: `data/taxonomy.json`, `data/nl_benchmark.json`. Tests: 98 unit tests across nine test files. Docs: `README.md`, `model_card.md`, `diagrams/architecture.mmd`, `docs/`. It also ran the tests, the evaluator and fresh-virtualenv installs, and generated the reports in `reports/`.
 
 **What did you verify or fix manually?**
 
-Checks run by the agent (automated, by running the code): 91 unit tests, 80 evaluation checks, a clean-copy install after each major change, and a parse of the Mermaid diagram. These caught agent mistakes: a regex edit that silently dropped a word-boundary escape and broke three tests, a misleading "used keyword fallback" note, a table row detached by a blank line, and a README count that went stale after the taxonomy changed. Manual probing with odd inputs found three bugs that all earlier checks had passed (blank `--ask`, an unintelligible request ranked arbitrarily, "brunch" read as "run"). The model card section "My collaboration with AI" records one suggestion accepted and one not adopted as written.
+Checks run by the agent (automated, by running the code): 98 unit tests, 80 evaluation checks, a clean-copy install after each major change, and a parse of the Mermaid diagram. These caught agent mistakes: a regex edit that silently dropped a word-boundary escape and broke three tests, a misleading "used keyword fallback" note, a table row detached by a blank line, and a README count that went stale after the taxonomy changed. Manual probing with odd inputs found three bugs that all earlier checks had passed (blank `--ask`, an unintelligible request ranked arbitrarily, "brunch" read as "run"). The model card section "My collaboration with AI" records one suggestion accepted and one not adopted as written.
 
-Human review: not yet recorded here; add your own notes.
 
 ---
 

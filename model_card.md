@@ -65,7 +65,7 @@ The catalog is [data/songs.csv](data/songs.csv): 18 songs, each with a genre, a 
 - **Every recommendation is explainable.** Each result lists the points earned for energy, mood, acoustic feel and genre, which is how I found each of the weaknesses described in this card.
 - **It fails safely on bad input.** Scores always stay between 0 and 1, an empty profile says "no preferences provided" rather than inventing a taste, and values it cannot read (such as `likes_acoustic = "maybe"`) are rejected with an error instead of being guessed. The word "no" is read correctly as "not acoustic".
 - **The ranking avoids obvious repeats.** A song by an artist who already has a pick in the list, or one from the same sound group, is nudged down, so one artist does not fill the list.
-- **It is tested.** Originally 12 automatic tests covered the scoring rules, the related genre and mood credit, the acousticness parsing and the diversity step. The final system has 91 tests plus an 80-check evaluation (see section 7 and section 10).
+- **It is tested.** Originally 12 automatic tests covered the scoring rules, the related genre and mood credit, the acousticness parsing and the diversity step. The final system has 98 tests plus an 80-check evaluation (see section 7 and section 10).
 
 ---
 
@@ -183,11 +183,11 @@ I trust the system when a taste matches how the catalog is built. Loud and happy
 
 I do not trust it in three cases. The first is a taste that crosses the line between low-energy and high-energy moods. The second is a preference typed with different capital letters. The third is a profile with only one or two preferences. The score looks confident in all three.
 
-I still have no accuracy number, because there are no real listener ratings to compare against. What I do have is automated checking of properties that should always hold: `python -m src.evaluate` runs 80 checks (scores stay within 0 to 1, the right number of results comes back, no artist repeats more than twice, results are deterministic, each profile earns the expected confidence level, and a model reply with bad JSON or an invented genre is handled), and 91 unit tests cover the rest. These show the system behaves safely and consistently. They do not show that the picks are the ones a listener would enjoy. That judgement still comes from comparing the results to what I would expect to hear.
+I still have no accuracy number, because there are no real listener ratings to compare against. What I do have is automated checking of properties that should always hold: `python -m src.evaluate` runs 80 checks (scores stay within 0 to 1, the right number of results comes back, no artist repeats more than twice, results are deterministic, each profile earns the expected confidence level, and a model reply with bad JSON or an invented genre is handled), and 98 unit tests cover the rest. These show the system behaves safely and consistently. They do not show that the picks are the ones a listener would enjoy. That judgement still comes from comparing the results to what I would expect to hear.
 
 ### Reliability and beyond-accuracy results
 
-**Summary:** 91 of 91 unit tests and 80 of 80 evaluation checks pass. Across the 13 profiles the scorer accepts, confidence was 7 HIGH, 5 MEDIUM, 0 LOW and 1 NONE, with a mean top score of 0.87 (lowest 0.62). The system struggled when context was missing or contradictory: the empty profile gets NONE, and the contradictory "metal fan who wants chill" profile still earns MEDIUM. The relax and NO STRONG MATCH paths never fire on the 14 built-in profiles (none scores LOW), so unit tests are the only thing exercising them. No human or peer evaluation has been done; all of these results are automated. The full parseable tables (per-profile checks, request-parsing cases, confidence summary and the metrics below) are in the README under "Testing summary" and are regenerated into `reports/evaluation_report.md` by `python -m src.evaluate`.
+**Summary:** 98 of 98 unit tests and 80 of 80 evaluation checks pass. Across the 13 profiles the scorer accepts, confidence was 7 HIGH, 5 MEDIUM, 0 LOW and 1 NONE, with a mean top score of 0.87 (lowest 0.62). The system struggled when context was missing or contradictory: the empty profile gets NONE, and the contradictory "metal fan who wants chill" profile still earns MEDIUM. The relax and NO STRONG MATCH paths never fire on the 14 built-in profiles (none scores LOW), so unit tests are the only thing exercising them. No human or peer evaluation has been done; all of these results are automated. The full parseable tables (per-profile checks, request-parsing cases, confidence summary and the metrics below) are in the README under "Testing summary" and are regenerated into `reports/evaluation_report.md` by `python -m src.evaluate`.
 
 Beyond-accuracy metrics (12 profiles with usable preferences, top 5 each, diversity step on versus off):
 
@@ -197,9 +197,47 @@ Beyond-accuracy metrics (12 profiles with usable preferences, top 5 each, divers
 | Distinct genres per list (of 5) | 4.33 | 4.00 |
 | Share of list slots taken by the 5 most-shown songs | 48% | 55% |
 | Exposure Gini | 0.27 | 0.37 |
-| Serendipity proxy (relevant picks outside the requested genre) | 62% (29 of 47) | not measured |
+| Serendipity proxy (relevant picks outside the requested genre) | 62% (30 of 48) | not measured |
 
 **Which of diversity, novelty, serendipity, coverage and popularity bias are worth testing here:** diversity and coverage directly (the system has a diversity penalty, and the original evaluation found five songs filling 28 of 60 slots). Popularity bias only as an analogue, *exposure concentration*, because the songs are invented and have no popularity data. Serendipity only as a proxy, because there is no listening history to say what a listener expected. Novelty not at all: it needs per-listener history or popularity, and with one song for 13 of 15 genres a genre-rarity stand-in would be meaningless. The serendipity figure is inflated by that same one-song-per-genre structure.
+
+### Specialization: baseline vs specialized output
+
+The baseline is the keyword parser. The specialized parser is the optional hybrid (keyword rules first, then embedding prototypes, one exemplar phrase set per mood, with similarity cut-offs tuned on half of a 36-request labelled benchmark). No model weights are trained; the specialization is exemplars plus tuning. "Both correct" means the mood and the energy band are both acceptable against the labels.
+
+| Parser | Held-out half, both correct | Mood | Energy | All 36 requests |
+|---|---|---|---|---|
+| keywords | 67% | 72% | 78% | 58% |
+| embeddings | 50% | 67% | 83% | 61% |
+| hybrid | 83% | 83% | 100% | 83% |
+
+Their outputs differ on 18 of 36 requests; the specialized parser fixes 9, breaks none, and still gets 4 wrong. A sample, including two it gets wrong (the full list is in `reports/parser_benchmark.md`):
+
+| Request | Baseline (keywords) | Specialized (hybrid) | Baseline | Specialized |
+|---|---|---|---|---|
+| music to unwind after a long day | `{}` | `{"mood": "relaxed", "energy": 0.15}` | wrong | right |
+| songs that make me want to dance all night | `{"energy": 0.85}` | `{"mood": "euphoric", "energy": 0.85}` | wrong | right |
+| I'm heartbroken | `{}` | `{"mood": "sad"}` | wrong | right |
+| wistful memories of my childhood | `{}` | `{"mood": "nostalgic"}` | wrong | right |
+| fast and loud | `{}` | `{"mood": "intense", "energy": 0.93}` | wrong | right |
+| feel-good summer vibes | `{}` | `{"mood": "chill", "energy": 0.8}` | wrong | wrong |
+| slow and gentle | `{}` | `{"mood": "romantic", "energy": 0.3}` | wrong | wrong |
+
+For reference, the live Claude parser scored 100% on the held-out half and 97% overall in one run (no tuning, no fallbacks); it is the most accurate option but needs a paid key, adds latency and varies between runs, so it is the optional front end, not the default.
+
+Caveats: 36 requests is small; the benchmark was drafted by Claude Code before any model ran and its labels have one author; it is weighted toward paraphrases (14 of 36), which the keyword rules were never built for; and it measures request parsing, not whether listeners get better recommendations.
+
+### Multi-source retrieval: before and after
+
+Ranking draws on two sources, `songs.csv` and, as a fallback for pairs the hand-tuned tables do not list, `taxonomy.json`. Adding the second source changes the top 5 for 8 of the 14 profiles. Three examples (all are in `reports/evaluation_report.md`):
+
+| Profile | Top 5 without the taxonomy | Top 5 with the taxonomy |
+|---|---|---|
+| High-Energy Pop | Sunrise City, Rooftop Lights, Laser Cathedral, Gym Hero, Velvet Hours | Sunrise City, Rooftop Lights, Laser Cathedral, Concrete Verses, Gym Hero |
+| Deep Intense Rock | Storm Runner, Iron Tide, Gym Hero, Sunrise City, Laser Cathedral | Storm Runner, Iron Tide, Gym Hero, Night Drive Loop, Concrete Verses |
+| Conflicted (sad but high-energy) | Hollow Lantern, Winter Nocturne, Rooftop Lights, Storm Runner, Dust Road Home | Hollow Lantern, Night Drive Loop, Winter Nocturne, Rooftop Lights, Dust Road Home |
+
+This is a change in output, not a measured gain: there are no listener ratings to say whether the new results are better.
 
 ### How the taxonomy was checked
 
@@ -243,8 +281,8 @@ Four simple rules were enough to feel like real recommendations. The Chill Lofi 
 ### What I would try next
 
 1. Add many more songs, with some sad high-energy and happy mid-energy tracks. Most of my problems came from having only 18.
-2. Make the system say "closest I could find" when nothing fits a listener's taste.
-3. Ignore capital letters, so "Pop" means "pop".
+2. Make the system say "closest I could find" when nothing fits a listener's taste. (Done in the final system: confidence rating, relaxation and NO STRONG MATCH.)
+3. Ignore capital letters, so "Pop" means "pop". (Done: input is normalized.)
 4. Learn which moods and genres are similar from real listening data. My 0.9 for intense and aggressive was tuned to one test, so I would check it on a second dataset.
 
 ---
@@ -263,10 +301,10 @@ Sections 1 to 9 describe the original recommender and my first evaluation. This 
 - **The optional embedding parser is measured on a small, author-labelled benchmark.** On 36 hand-labelled requests the hybrid parser (rules first, embeddings fill gaps) scored 83% on the held-out half against 67% for the keyword rules, but the benchmark was drafted by Claude Code before any model ran, has one set of labels that no second person has reviewed, and is weighted toward paraphrases (14 of 36), which the keyword rules were never built to handle. It measures parsing, not recommendation quality. The embedding model also inherits whatever associations it learned from its training text, which I have not audited, and sentence embeddings cannot read goals or negation, which is why the rules stay in charge of those.
 - **The lexicon cross-check is a small outside check, not proof.** The NRC-VAD ratings come from crowd workers rating English words, so they reflect that population's sense of how a word feels; the lexicon's authors note that such resources carry the biases of their raters. Only 12 of my 14 mood words are in it, and it validates the groupings, not the credit values.
 - **Moods describe what a song conveys, but requests describe what a listener wants.** The music emotion recognition literature separates perceived emotion (what the music itself conveys) from induced emotion (what it provokes in the listener) (Han et al., 2022). Our catalog moods are perceived labels, while "cheer me up" names an induced state, so the request parsers translate goals into target moods, imperfectly. The same survey stresses that emotion is subjective, that one valence-arousal quadrant holds several distinct emotions, and that public datasets are small and skewed toward a few genres, all of which apply here. Our 14 moods also have no equivalent of the "amazement" and "solemnity" categories in the Geneva Emotional Music Scales, and the features include no key or mode.
-- **The Claude path is unmeasured.** Claude's mapping from phrases to moods and energy could carry its own biases (what counts as "mellow", or who "study music" is for), and I have not evaluated that. I tested the path offline with a fake client and did not run it against the live API.
+- **The Claude path is measured only once, on a small benchmark.** In one live run on the 36-request benchmark it scored 97% overall and 100% on the held-out half, with no fallbacks. Its one miss was returning no preferences for "I'm heartbroken", on three tries out of three: a conservative reading of my prompt, which tells it to omit anything the request gives no evidence for, not an error. Its output varies between runs (one request gave energy targets of 0.30, 0.35 and 0.40), the benchmark is small, one-author and weighted toward paraphrases, and Claude's mapping from phrases to moods could carry biases I have not audited (what counts as "mellow", or who "study music" is for).
 - **Plausible-looking explanations can create false trust.** The "why" list reads like understanding, but the system only compares numbers and labels; it knows nothing about lyrics, language, culture, popularity or listening history.
 - **No fairness measure for artists.** The only exposure control is a per-list penalty that stops one artist or sound cluster dominating a single list. The artists are invented, so nothing here shows how it would treat real, unequally popular artists.
-- **No accuracy measure.** There are no listener ratings. My 80 checks and 91 tests show the system behaves safely and consistently, not that its picks are good.
+- **No accuracy measure.** There are no listener ratings. My 80 checks and 98 tests show the system behaves safely and consistently, not that its picks are good.
 
 ### 10.2 Could this AI be misused, and how could it be prevented?
 
@@ -283,6 +321,7 @@ It is a classroom-scale recommender, so the realistic harms are small, but the p
 - **The taxonomy's effect was bigger than I expected.** I described it as a small fallback for pairs my tables did not list, but it changed the top five for **8 of the 14 profiles**. That is why the evaluation report now lists the before-and-after results for each changed profile.
 - **A perfect 76/76 hid real problems.** After every automated check passed, trying odd inputs by hand turned up three bugs: `--ask ""` silently ran the 14 default profiles, an unintelligible request printed an arbitrary ranking, and "brunch playlist" was read as high-energy. The checks only cover what I thought to test.
 - **The confidence rating is easy to fool.** Because it looks only at the best score, one song that matches the energy exactly can carry a contradictory request to MEDIUM. I had assumed it would flag contradictions.
+- **The first live API call found a bug no offline test could.** I had tested the Claude path only with a fake client. The real model's reply began with a "thinking" block that has no `.text`, so the parser crashed and quietly fell back to the keyword rules; everything still looked fine in the output. I fixed it (the parser reads the text blocks, with more token headroom) and added tests that use that exact reply shape. Going live also showed that the evaluator and some tests would have made real API calls whenever a key was set, so they now remove the key for their duration.
 - **The original crashes were the easy part.** Turning `likes_acoustic="maybe"` and `energy="high"` into clear messages took little effort; making the system sound appropriately unsure was harder, and is still incomplete.
 - **A basic setup mismatch.** `pyproject.toml` required Python 3.14 and declared no dependencies, while the README said 3.11 and `requirements.txt` listed two. I only found it by checking the setup from a clean copy.
 
@@ -318,3 +357,13 @@ Two further resources were used afterwards, one as a check and one as an option:
 
 I considered but did not use a music-audio or music-text model (CLAP-style, MERT, Essentia classifiers): the catalog is invented and has no audio, so there is nothing for such a model to listen to. I also did not use word embeddings to compute mood similarity, because opposites such as "sad" and "happy" often sit close together in embedding space; the lexicon's explicit valence and arousal ratings are a better check.
 
+### 10.6 Future improvements
+
+In the order I would do them:
+
+1. **Replace the invented catalog.** Eighteen made-up songs are the root of most limitations. Public datasets with audio and valence-arousal annotations exist (DEAM, AMG1608, MediaEval; I did not check their licenses). They would also let me test the mood-to-valence-and-energy mapping against real annotations instead of only the lexicon.
+2. **Flag contradictory requests.** The confidence rating looks only at the best score, so "a metal fan who wants chill" earns MEDIUM. A check that notices when the stated moods and energies cannot co-occur in the catalog would say why, not just how sure.
+3. **A second labeller and a larger benchmark** for the request parsers, so the 83% against 67% result can be trusted or corrected, plus repeated live runs of the Claude path (so far there is one run, and its output varies).
+4. **Use more of the features.** Tempo (sad songs here run slower than intense ones) and key or mode are in or near the data but not in the score. Any change that alters rankings needs its own measured experiment.
+5. **Grounded explanations** (a real retrieval-augmented step): have a model write each "why" sentence from the retrieved catalog row and taxonomy entry, with a validator that rejects claims not in those fields.
+6. **Pin the optional embedding model to an exact revision** and add per-listener history so novelty and true serendipity can be measured rather than skipped.
