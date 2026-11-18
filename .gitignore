@@ -13,3 +13,12 @@ venv/
 
 # Pytest cache
 .pytest_cache/
+
+# runtime output
+logs/
+
+# local secrets
+.env
+
+# external lexicons (not redistributable)
+data/external/

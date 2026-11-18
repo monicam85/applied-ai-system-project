@@ -2,6 +2,11 @@ from typing import List, Dict, Tuple, Optional
 import csv
 from dataclasses import asdict, dataclass
 
+try:
+    from . import taxonomy
+except ImportError:  # run as `python src/main.py`
+    import taxonomy
+
 @dataclass
 class Song:
     """
@@ -129,6 +134,21 @@ RELATED_GENRES = {
     ]
 }
 
+def _mood_credit(song_mood: str, wanted: str) -> float:
+    """Hand-picked pair value first; the taxonomy (same cluster, neighbours) covers the rest."""
+    pair = frozenset((song_mood, wanted))
+    if pair in MOOD_SIMILARITY:
+        return MOOD_SIMILARITY[pair]
+    return taxonomy.mood_similarity(song_mood, wanted)
+
+
+def _genre_credit(song_genre: str, wanted: str) -> float:
+    """Hand-picked related pairs first; the taxonomy (same family, neighbours) covers the rest."""
+    if frozenset((song_genre, wanted)) in RELATED_GENRES:
+        return PARTIAL_GENRE_CREDIT
+    return taxonomy.genre_similarity(song_genre, wanted)
+
+
 # Preferred acousticness when the user only says whether they like acoustic music.
 ACOUSTIC_TARGET_YES, ACOUSTIC_TARGET_NO = 0.8, 0.2
 
@@ -144,21 +164,37 @@ def _closeness(a: float, b: float) -> float:
     return max(0.0, 1 - abs(a - b) / TOLERANCE)
 
 
+REQUIRED_COLUMNS = {"id", "title", "artist", "genre", "mood", "energy", "acousticness"}
+
+
 def load_songs(csv_path: str) -> List[Dict]:
-    """Loads songs from a CSV file, converting numeric columns to numbers."""
+    """
+    Loads songs from a CSV file, converting numeric columns to numbers.
+
+    Raises FileNotFoundError if the file is missing and ValueError (naming the row
+    and column) if required columns are absent, a number cannot be parsed, or the
+    file holds no songs, so callers can report a clear message instead of a traceback.
+    """
     int_cols = {"id", "release_year"}
     float_cols = {"energy", "tempo_bpm", "valence", "danceability", "acousticness",
                   "instrumentalness", "speechiness"}
     songs: List[Dict] = []
     with open(csv_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            for col in int_cols:
+        reader = csv.DictReader(f)
+        missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{csv_path}: missing required column(s) {sorted(missing)}")
+        for line, row in enumerate(reader, start=2):  # line 1 is the header
+            for col in int_cols | float_cols:
                 if row.get(col):
-                    row[col] = int(row[col])
-            for col in float_cols:
-                if row.get(col):
-                    row[col] = float(row[col])
+                    try:
+                        row[col] = int(row[col]) if col in int_cols else float(row[col])
+                    except ValueError:
+                        raise ValueError(f"{csv_path} line {line}: {col} must be a number, "
+                                         f"got {row[col]!r}") from None
             songs.append(row)
+    if not songs:
+        raise ValueError(f"{csv_path}: no songs found")
     return songs
 
 
@@ -251,11 +287,12 @@ def score_song(user_prefs: Dict, song: Dict, mode="balanced") -> Tuple[float, Li
     if "mood" in user_prefs:
         if song["mood"] == user_prefs["mood"]:
             add("mood", 1.0, f"mood matches ({song['mood']})")
-        elif frozenset((song["mood"], user_prefs["mood"])) in MOOD_SIMILARITY:
-            add("mood", MOOD_SIMILARITY[frozenset((song["mood"], user_prefs["mood"]))],
-                f"mood is close ({song['mood']})")
         else:
-            add("mood", 0.0, f"mood differs ({song['mood']})")
+            credit = _mood_credit(song["mood"], user_prefs["mood"])
+            if credit > 0:
+                add("mood", credit, f"mood is close ({song['mood']})")
+            else:
+                add("mood", 0.0, f"mood differs ({song['mood']})")
     acoustic_target = _acoustic_target(user_prefs)
     if acoustic_target is not None:
         add("acousticness", _closeness(song["acousticness"], acoustic_target),
@@ -263,10 +300,12 @@ def score_song(user_prefs: Dict, song: Dict, mode="balanced") -> Tuple[float, Li
     if "genre" in user_prefs:
         if song["genre"] == user_prefs["genre"]:
             add("genre", 1.0, f"genre matches ({song['genre']})")
-        elif frozenset((song["genre"], user_prefs["genre"])) in RELATED_GENRES:
-            add("genre", PARTIAL_GENRE_CREDIT, f"genre is close ({song['genre']})")
         else:
-            add("genre", 0.0, f"genre differs ({song['genre']})")
+            credit = _genre_credit(song["genre"], user_prefs["genre"])
+            if credit > 0:
+                add("genre", credit, f"genre is close ({song['genre']})")
+            else:
+                add("genre", 0.0, f"genre differs ({song['genre']})")
     if "valence" in user_prefs:
         add("valence", _closeness(song["valence"], user_prefs["valence"]),
             f"valence {song['valence']:.2f} vs target {user_prefs['valence']:.2f}")

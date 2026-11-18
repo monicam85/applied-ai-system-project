@@ -9,17 +9,44 @@ Options:
     --mode NAME   scoring strategy: balanced (default), genre-first,
                   mood-first or energy-focused
     --compare     show the top 3 of every mode side by side for each profile
+    --ask TEXT    describe what you want in plain English, e.g. --ask "mellow study music"
+    --embeddings  with --ask: read paraphrases with an optional embedding model
+    --trace       print the decision chain (sanitize, rank, confidence, relax, decision) per result
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 try:  # works for `python -m src.main`
+    from .embed_parse import EmbeddingParser, default_encoder
+    from .nl_query import parse_request
     from .recommender import MODES, load_songs, recommend_songs
+    from .reliability import format_trace, recommend_with_checks
 except ImportError:  # works for `python src/main.py`
+    from embed_parse import EmbeddingParser, default_encoder
+    from nl_query import parse_request
     from recommender import MODES, load_songs, recommend_songs
+    from reliability import format_trace, recommend_with_checks
 
-SONGS_CSV = Path(__file__).resolve().parent.parent / "data" / "songs.csv"
+ROOT = Path(__file__).resolve().parent.parent
+SONGS_CSV = ROOT / "data" / "songs.csv"
+LOG_FILE = ROOT / "logs" / "app.log"
+
+
+def setup_logging() -> None:
+    """Logs everything to logs/app.log; only warnings and errors reach the terminal."""
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    root = logging.getLogger("vibescorecard")
+    if root.handlers:  # already configured (e.g. main() called twice in tests)
+        return
+    root.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    console = logging.StreamHandler()
+    console.setLevel(logging.ERROR)
+    root.addHandler(file_handler)
+    root.addHandler(console)
 WIDTH = 64
 
 
@@ -97,6 +124,22 @@ def format_recommendations(name: str, user_prefs: dict, recommendations: list) -
     return "\n".join(lines)
 
 
+def present(label: str, result: dict) -> str:
+    """Renders a guarded result. A no-strong-match result is NOT shown as a pick list."""
+    confidence = result["confidence"]
+    if result["error"]:
+        return f"{label}: rejected input: {result['error']}"
+    if result["no_strong_match"]:
+        best = result["recommendations"][0][1] if result["recommendations"] else 0.0
+        return (f"{label}: NO STRONG MATCH (best score {best:.2f}).\n"
+                "  Nothing in the catalog fits this taste; try different preferences.")
+    block = format_recommendations(label, result["prefs"], result["recommendations"])
+    notes = result["warnings"] + confidence["reasons"]
+    footer = [f"Confidence: {confidence['level'].upper()} (top score {confidence['top_score']:.2f})"]
+    footer += [f"  note: {n}" for n in notes]
+    return block + "\n" + "\n".join(footer)
+
+
 def format_comparison(name: str, user_prefs: dict, songs: list, k: int = 3) -> str:
     """One block per profile: the top k songs of every scoring mode, one mode per line."""
     profile = ", ".join(f"{key}={value}" for key, value in user_prefs.items()) or "(empty)"
@@ -114,10 +157,50 @@ def main(argv=None) -> None:
                         help="scoring strategy (default: balanced)")
     parser.add_argument("--compare", action="store_true",
                         help="compare the top 3 of every mode for each profile")
+    parser.add_argument("--ask", metavar="TEXT",
+                        help="plain-English request; uses Claude if ANTHROPIC_API_KEY is set")
+    parser.add_argument("--trace", action="store_true",
+                        help="after each result, print the decision chain: what each step saw and decided")
+    parser.add_argument("--embeddings", action="store_true",
+                        help="with --ask and no API key, read paraphrases with a sentence-embedding "
+                             "model (optional install: requirements-embeddings.txt)")
     args = parser.parse_args(argv)
+    setup_logging()
 
-    songs = load_songs(str(SONGS_CSV))
-    print(f"Loaded songs: {len(songs)}\n")
+    try:
+        songs = load_songs(str(SONGS_CSV))
+    except (OSError, ValueError) as error:
+        logging.getLogger("vibescorecard").error("could not load catalog: %s", error)
+        print(f"Cannot start: could not load the song catalog ({error}).")
+        raise SystemExit(1)
+    if args.ask is not None:
+        embedder, embed_notes = None, []
+        if args.embeddings:
+            try:
+                embedder = EmbeddingParser(default_encoder())
+            except Exception as error:  # package missing, no network for the model, ...
+                logging.getLogger("vibescorecard").error("embedding parser unavailable: %s", error)
+                embed_notes.append(f"--embeddings unavailable ({error}); used keyword fallback")
+        prefs, notes, source = parse_request(args.ask, songs, embedder=embedder)
+        notes = embed_notes + notes
+        if not prefs:  # nothing usable: say so rather than print an arbitrary ranking
+            print("Could not find any music preferences in that request.")
+            for line in notes:
+                print(f"  note: {line}")
+            print('Try something like: --ask "upbeat pop for a workout"')
+            return
+        result = recommend_with_checks(prefs, songs, k=5, mode=args.mode)
+        shown = args.ask.strip()
+        shown = shown if len(shown) <= 60 else shown[:57] + "..."
+        print(present(f"Request: {shown}", result))
+        if args.trace:
+            interpret = {"step": "interpret", "detail": f"read {args.ask.strip()!r} via {source} -> {prefs!r}"
+                         + (f"; notes: {'; '.join(notes)}" if notes else "")}
+            print("\nDecision trace:\n" + format_trace([interpret] + result["trace"]))
+        print(f"Interpreted via: {source}")
+        for line in notes:
+            print(f"  note: {line}")
+        return
 
     if args.compare:
         print("Top 3 per scoring mode (score in brackets)")
@@ -134,13 +217,11 @@ def main(argv=None) -> None:
         return
 
     for name, user_prefs in PROFILES.items():
-        try:
-            recommendations = recommend_songs(user_prefs, songs, k=5, mode=args.mode)
-        except Exception as error:  # adversarial profiles may be invalid on purpose
-            print(f"{name}: CRASHED with {type(error).__name__}: {error}\n")
-            continue
+        result = recommend_with_checks(user_prefs, songs, k=5, mode=args.mode)
         label = name if args.mode == "balanced" else f"{name} [{args.mode}]"
-        print(format_recommendations(label, user_prefs, recommendations))
+        print(present(label, result))
+        if args.trace:
+            print("\nDecision trace:\n" + format_trace(result["trace"]))
         print()
 
 

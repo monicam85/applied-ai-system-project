@@ -1,0 +1,5 @@
+# Optional extra: embedding-based request parsing (python -m src.main --ask "..." --embeddings)
+# Adds about 1.2 GB of packages (PyTorch) and downloads a ~175 MB model on first use.
+# Not needed for anything else in this project.
+-r requirements.txt
+sentence-transformers==6.3.0
