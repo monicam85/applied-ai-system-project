@@ -1,0 +1,76 @@
+%% VibeScorecard system diagram. Solid arrows = data flow, dotted = checking / feedback.
+%% Render: paste into https://mermaid.live or view on GitHub (also embedded in README.md).
+flowchart TB
+    USER(["Listener<br/>(human)"])
+
+    subgraph INPUT["1. Input"]
+        direction LR
+        PROFILE["Structured profile<br/>genre, mood, energy,<br/>likes_acoustic"]
+        ASK["Plain-English request<br/>--ask 'mellow study music'"]
+        CSV[("data/songs.csv<br/>18 songs")]
+        TAX[("data/taxonomy.json<br/>genre families,<br/>mood clusters")]
+    end
+
+    subgraph PARSE["2. Interpret  (src/nl_query.py)"]
+        direction LR
+        LLM["Claude parser<br/>optional, needs API key<br/>output treated as untrusted"]
+        KW["Keyword parser<br/>offline fallback"]
+        LLM -- "timeout, bad JSON,<br/>no key" --> KW
+    end
+
+    subgraph GUARD["3. Guarded pipeline  (src/reliability.py)"]
+        direction TB
+        SAN["Sanitize<br/>fix case, clamp 0-1,<br/>drop unknown genres,<br/>reject bad types"]
+        RETR["Retrieve and rank  (src/recommender.py)<br/>score_song over every song,<br/>taxonomy fallback for near-miss<br/>genres and moods,<br/>artist and cluster diversity penalty"]
+        CONF{"Confidence<br/>HIGH / MEDIUM / LOW / NONE"}
+        RELAX["Relax profile<br/>drop the preference<br/>no song fits, re-rank"]
+        SAN --> RETR --> CONF
+        CONF -- "LOW" --> RELAX
+        RELAX -- "re-rank" --> RETR
+    end
+
+    subgraph OUTPUT["4. Output  (src/main.py)"]
+        direction LR
+        TOP["Top-k songs with score<br/>and plain-language<br/>reasons, confidence, notes"]
+        NOMATCH["NO STRONG MATCH<br/>or 'no preferences found'<br/>instead of a ranked list"]
+    end
+
+    LOG[("logs/app.log<br/>every LLM call, repair,<br/>fallback, confidence level<br/>--trace prints the decision chain")]
+
+    subgraph TEST["Testing and evaluation"]
+        direction TB
+        UNIT["pytest: 91 unit tests<br/>scorer, reliability,<br/>taxonomy competency questions,<br/>guardrails"]
+        EVAL["src/evaluate.py<br/>80 automated checks:<br/>14 profiles + LLM-reply cases,<br/>taxonomy before/after"]
+        REPORT["reports/evaluation_report.md"]
+        EVAL --> REPORT
+    end
+
+    ASK --> LLM
+    KW --> SAN
+    PROFILE --> SAN
+    CSV --> RETR
+    TAX --> RETR
+    USER --> PROFILE
+    USER --> ASK
+
+    CONF -- "MEDIUM / HIGH" --> TOP
+    CONF -- "LOW, relaxing did not help" --> NOMATCH
+    SAN -. "warnings" .-> LOG
+    LLM -. "calls, failures" .-> LOG
+    CONF -. "level, relaxation" .-> LOG
+
+    TOP --> USER
+    NOMATCH --> USER
+
+    %% Where checking happens
+    UNIT -. "verifies" .-> RETR
+    UNIT -. "verifies" .-> SAN
+    EVAL -. "runs end to end" .-> GUARD
+    EVAL -. "runs" .-> PARSE
+
+    %% Human checkpoints
+    USER -. "H1: reads the reasons and<br/>confidence, judges the picks" .-> TOP
+    REVIEWER(["Developer<br/>(human)"])
+    REPORT -. "H2: reviews report and<br/>taxonomy impact; sets the credit<br/>values and groupings by judgement" .-> REVIEWER
+    LOG -. "H3: inspects failures<br/>and fallbacks" .-> REVIEWER
+    REVIEWER -. "adjusts weights, taxonomy,<br/>tests" .-> TAX
