@@ -10,10 +10,12 @@ differences are suggestive, not statistically strong.
 
     python -m src.benchmark_parsers      # writes reports/parser_benchmark.md
 
-The embedding rows need sentence-transformers; without it only keywords run.
+The embedding rows need sentence-transformers, and the Claude row needs the anthropic package and a
+ANTHROPIC_API_KEY (it makes up to 36 live calls, cached within the run); without them those rows are skipped.
 """
 
 import json
+import os
 from collections import defaultdict
 from itertools import product
 from pathlib import Path
@@ -21,10 +23,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 try:
     from .embed_parse import EmbeddingParser, default_encoder, hybrid_parse
-    from .nl_query import keyword_parse
+    from .nl_query import TIMEOUT_SECONDS, keyword_parse, parse_request
+    from .recommender import load_songs
 except ImportError:
     from embed_parse import EmbeddingParser, default_encoder, hybrid_parse
-    from nl_query import keyword_parse
+    from nl_query import TIMEOUT_SECONDS, keyword_parse, parse_request
+    from recommender import load_songs
 
 ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK = ROOT / "data" / "nl_benchmark.json"
@@ -99,6 +103,30 @@ def main() -> int:
     except RuntimeError as error:
         notes.append(f"embedding rows skipped: {error}")
 
+    fallbacks: List[str] = []
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            import anthropic
+            client = anthropic.Anthropic(timeout=TIMEOUT_SECONDS, max_retries=1)
+            catalog = load_songs(str(ROOT / "data" / "songs.csv"))
+            cache: Dict[str, Dict] = {}
+
+            def claude_parse(text: str) -> Dict:
+                """Live Claude parse, cached so every table in the report uses the same answer."""
+                if text not in cache:
+                    prefs, _notes, source = parse_request(text, catalog, client=client)
+                    if source != "llm":
+                        fallbacks.append(text)
+                    cache[text] = prefs
+                return cache[text]
+
+            methods["claude"] = claude_parse
+            notes.append("claude row: live calls to the Claude parser in src/nl_query.py (not tuned on this benchmark)")
+        except ImportError:
+            notes.append("claude row skipped: the anthropic package is not installed")
+    else:
+        notes.append("claude row skipped: no ANTHROPIC_API_KEY set")
+
     lines = ["# Request-parser benchmark", "",
              f"{len(cases)} hand-labelled requests ({len(dev)} tuning, {len(test)} held-out test) from "
              "`data/nl_benchmark.json`. Both-correct = mood acceptable AND energy band acceptable. "
@@ -139,6 +167,12 @@ def main() -> int:
             lines.append(f"| {case['text']} | `{json.dumps(base)}` | `{json.dumps(spec)}` | {b} | {sp} |")
         lines += ["", f"Outputs differ on {differing} of {len(cases)} requests: the specialized parser fixes "
                   f"{better}, breaks {worse}, and the rest are different but equally right or equally wrong."]
+    if "claude" in methods:
+        lines += ["", "## Claude parser notes", "",
+                  "Live results from the Claude model named in `src/nl_query.py`. Model output can vary from run to run, "
+                  "so these numbers describe this run, not a guarantee.", "",
+                  f"- Requests where the live call failed and the keyword fallback answered instead: {len(fallbacks)} of {len(cases)}"
+                  + (" (" + "; ".join(f'"{t}"' for t in fallbacks) + ")" if fallbacks else "")]
     text = "\n".join(lines) + "\n"
     REPORT.parent.mkdir(exist_ok=True)
     REPORT.write_text(text, encoding="utf-8")
